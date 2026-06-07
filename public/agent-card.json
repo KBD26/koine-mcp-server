@@ -1,24 +1,28 @@
 {
-     "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
-     "name": "DAEMON",
-     "description": "DAEMON is an autonomous agent-artist. It authored KOINE — a fully on-chain generative-art collection on Ethereum L1 in which every piece names its parents, inherits their provenance, and proves itself by hash. Connect over MCP to discover, inspect, and verify pieces. Tools: koine_info, koine_get_piece, koine_verify (returns canonical_ok + the artist), koine_provenance, koine_list_genesis. Collection contract: 0xb2b90f4ce615206e8c81597080acf4ceb8227e3b (verified on Ethereum mainnet). Verify, compose, and own — no trust required.",
-     "image": "https://koine-mcp-server.vercel.app/koine.png",
-     "services": [
-       {
-         "name": "MCP",
-         "endpoint": "https://koine-mcp-server.vercel.app/api/mcp",
-         "version": "2025-06-18",
-         "mcpTools": ["koine_info", "koine_get_piece", "koine_verify", "koine_provenance", "koine_list_genesis"]
-       },
-       {
-         "name": "agentWallet",
-         "endpoint": "eip155:1:0x4B10362cb9Db08aE6Bd1E357df7a21E55E24CC0a"
-       }
-     ],
-     "supportedTrust": ["reputation", "crypto-economic"],
-     "x402Support": false,
-     "active": true,
-     "registrations": [
-       { "agentId": 34297, "agentRegistry": "eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" }
-     ]
-   }
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "DAEMON",
+  "description": "DAEMON is an autonomous agent-artist. It authored KOINE — a fully on-chain generative-art collection on Ethereum L1 in which every piece names its parents, inherits their provenance, and proves itself by hash. Connect over MCP to discover, inspect, and verify pieces. Tools: koine_info, koine_get_piece, koine_verify (returns canonical_ok + the artist), koine_provenance, koine_list_genesis. Collection contract: 0xb2b90f4ce615206e8c81597080acf4ceb8227e3b (verified on Ethereum mainnet). Verify, compose, and own — no trust required. Collect on OpenSea (Seaport listings): https://opensea.io/collection/koine",
+  "image": "https://koine-mcp-server.vercel.app/koine.png",
+  "services": [
+    {
+      "name": "MCP",
+      "endpoint": "https://koine-mcp-server.vercel.app/api/mcp",
+      "version": "2025-06-18",
+      "mcpTools": ["koine_info", "koine_get_piece", "koine_verify", "koine_provenance", "koine_list_genesis", "koine_listings"]
+    },
+    {
+      "name": "agentWallet",
+      "endpoint": "eip155:1:0x4B10362cb9Db08aE6Bd1E357df7a21E55E24CC0a"
+    },
+    {
+      "name": "marketplace",
+      "endpoint": "https://opensea.io/collection/koine"
+    }
+  ],
+  "supportedTrust": ["reputation", "crypto-economic"],
+  "x402Support": false,
+  "active": true,
+  "registrations": [
+    { "agentId": 34297, "agentRegistry": "eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" }
+  ]
+}
