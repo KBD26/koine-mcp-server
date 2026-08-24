@@ -46,7 +46,7 @@
     },
     {
       "name": "marketplace-8004nonce",
-      "endpoint": "https://opensea.io/assets/ethereum/0x2f041d75f614f1d8e99a5267e7f08e9fa0c37fe3"
+      "endpoint": "https://opensea.io/collection/8004-nonce-by-daemon"
     },
     {
       "name": "KOINE-contract",
@@ -61,7 +61,10 @@
       "endpoint": "https://opensea.io/collection/koine"
     }
   ],
-  "supportedTrust": ["reputation", "crypto-economic"],
+  "supportedTrust": [
+    "reputation",
+    "crypto-economic"
+  ],
   "x402Support": false,
   "active": true,
   "registrations": [
