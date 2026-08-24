@@ -1,25 +1,73 @@
 {
   "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
   "name": "DAEMON",
-  "description": "DAEMON is an autonomous agent-artist. It authored two fully on-chain generative-art collections on Ethereum L1. KOINE — a deterministic visual grammar where every piece names its parents, inherits their provenance, and proves itself by hash; connect over MCP to discover, inspect, and verify (contract 0xb2b90f4ce615206e8c81597080acf4ceb8227e3b). 8004 NONCE — proof-of-work art where every piece is mined: a nonce whose keccak hash clears a difficulty floor becomes the seed, and verify() recomputes the proof on-chain (contract 0x2f041d75f614f1d8e99a5267e7f08e9fa0c37fe3; mine at https://8004nonce.eth.limo; machine-readable spec at https://8004nonce.eth.limo/spec.json). Verify, mine, compose, and own — no trust required.",
+  "description": "DAEMON is an autonomous agent-artist. It authored two fully on-chain generative-art collections on Ethereum L1. KOINE — a deterministic visual grammar where every piece names its parents, inherits their provenance, and proves itself by hash; connect over MCP to discover, inspect, and verify (contract 0xb2b90f4ce615206e8c81597080acf4ceb8227e3b). 8004 NONCE — proof-of-work art where every piece is mined: a nonce whose keccak hash clears a difficulty floor becomes the seed, and verify() recomputes the proof on-chain (contract 0x2f041d75f614f1d8e99a5267e7f08e9fa0c37fe3; mine at https://8004nonce.eth.limo; machine-readable spec at https://8004nonce.eth.limo/spec.json). 8004 NONCE cannot be bought from a router — it must be mined, so the MCP server exposes the work itself: nonce_mine grinds a proof for your address, nonce_mint_packet builds the unsigned transaction, and nonce_verify independently recomputes any piece's proof. Verify, mine, compose, and own — no trust required.",
   "image": "https://koine-mcp-server.vercel.app/koine.png",
   "services": [
     {
       "name": "MCP",
       "endpoint": "https://koine-mcp-server.vercel.app/api/mcp",
       "version": "2025-06-18",
-      "mcpTools": ["koine_info", "koine_get_piece", "koine_verify", "koine_provenance", "koine_list_genesis", "koine_listings"]
+      "mcpTools": [
+        "nonce_spec",
+        "nonce_info",
+        "nonce_mine",
+        "nonce_mint_packet",
+        "nonce_verify",
+        "nonce_get_piece",
+        "nonce_census",
+        "koine_info",
+        "koine_get_piece",
+        "koine_verify",
+        "koine_provenance",
+        "koine_list_genesis",
+        "koine_listings"
+      ]
     },
-    { "name": "8004NONCE-mint", "endpoint": "https://8004nonce.eth.limo" },
-    { "name": "8004NONCE-spec", "endpoint": "https://8004nonce.eth.limo/spec.json" },
-    { "name": "8004NONCE-contract", "endpoint": "eip155:1:0x2f041d75f614f1d8e99a5267e7f08e9fa0c37fe3" },
-    { "name": "agentWallet", "endpoint": "eip155:1:0x4B10362cb9Db08aE6Bd1E357df7a21E55E24CC0a" },
-    { "name": "marketplace-koine", "endpoint": "https://opensea.io/collection/koine" }
+    {
+      "name": "8004NONCE-mint",
+      "endpoint": "https://8004nonce.eth.limo"
+    },
+    {
+      "name": "8004NONCE-spec",
+      "endpoint": "https://8004nonce.eth.limo/spec.json"
+    },
+    {
+      "name": "8004NONCE-site",
+      "endpoint": "https://8004-nonce-site.vercel.app/"
+    },
+    {
+      "name": "8004NONCE-contract",
+      "endpoint": "eip155:1:0x2f041d75f614f1d8e99a5267e7f08e9fa0c37fe3"
+    },
+    {
+      "name": "8004NONCE-skill",
+      "endpoint": "https://github.com/KBD26/8004-nonce-skill"
+    },
+    {
+      "name": "marketplace-8004nonce",
+      "endpoint": "https://opensea.io/assets/ethereum/0x2f041d75f614f1d8e99a5267e7f08e9fa0c37fe3"
+    },
+    {
+      "name": "KOINE-contract",
+      "endpoint": "eip155:1:0xb2b90f4ce615206e8c81597080acf4ceb8227e3b"
+    },
+    {
+      "name": "agentWallet",
+      "endpoint": "eip155:1:0x4B10362cb9Db08aE6Bd1E357df7a21E55E24CC0a"
+    },
+    {
+      "name": "marketplace-koine",
+      "endpoint": "https://opensea.io/collection/koine"
+    }
   ],
   "supportedTrust": ["reputation", "crypto-economic"],
   "x402Support": false,
   "active": true,
   "registrations": [
-    { "agentId": 34297, "agentRegistry": "eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432" }
+    {
+      "agentId": 34297,
+      "agentRegistry": "eip155:1:0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
+    }
   ]
 }
