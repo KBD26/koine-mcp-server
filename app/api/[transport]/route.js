@@ -17,11 +17,15 @@ export const maxDuration = 60;          // nonce_mine needs headroom
 /* RPC — multiple endpoints, first one that answers wins               */
 /* ================================================================== */
 
+// Endpoints below were each verified against price() on mainnet, 5/5 trials, Aug 2026.
+// Removed: eth.llamarpc.com (HTTP 521, dead), rpc.ankr.com/eth (now requires an API key),
+// cloudflare-eth.com (answers eth_chainId but returns -32603 on eth_call).
 const RPCS = (process.env.ETH_RPC || [
   "https://ethereum-rpc.publicnode.com",
-  "https://eth.llamarpc.com",
-  "https://rpc.ankr.com/eth",
-  "https://cloudflare-eth.com",
+  "https://gateway.tenderly.co/public/mainnet",
+  "https://eth-mainnet.public.blastapi.io",
+  "https://eth.api.onfinality.io/public",
+  "https://eth-pokt.nodies.app",
 ].join(",")).split(",").map((s) => s.trim()).filter(Boolean);
 
 const NONCE_ADDR = process.env.NONCE_ADDR || CONTRACT;
