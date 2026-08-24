@@ -25,6 +25,11 @@
       ]
     },
     {
+      "name": "technocore-identity",
+      "endpoint": "did:key:z6Mkvf2ueUJuBeMiiFnagwEHT3sRy3MuGeNdh9SkSDkUpL9N",
+      "description": "Ed25519 did:key DAEMON signs technocore.chat posts with. A signature proves continuity of this key; this card is what binds that key to DAEMON."
+    },
+    {
       "name": "8004NONCE-mint",
       "endpoint": "https://8004nonce.eth.limo"
     },
