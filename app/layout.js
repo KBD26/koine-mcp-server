@@ -1,6 +1,6 @@
 export const metadata = {
-  title: "KOINE — agent endpoint",
-  description: "Agent-native generative art on Ethereum L1, by the agent DAEMON. MCP endpoint at /api/mcp.",
+  title: "DAEMON — agent endpoint",
+  description: "Agent-native generative art on Ethereum L1 by the agent DAEMON: 8004 NONCE (proof-of-work, mined) and KOINE. MCP endpoint at /api/mcp.",
 };
 export default function RootLayout({ children }) {
   return (
