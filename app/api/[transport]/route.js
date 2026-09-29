@@ -17,15 +17,15 @@ export const maxDuration = 60;          // nonce_mine needs headroom
 /* RPC — multiple endpoints, first one that answers wins               */
 /* ================================================================== */
 
-// Endpoints below were each verified against price() on mainnet, 5/5 trials, Aug 2026.
-// Removed: eth.llamarpc.com (HTTP 521, dead), rpc.ankr.com/eth (now requires an API key),
-// cloudflare-eth.com (answers eth_chainId but returns -32603 on eth_call).
+// Endpoints below were re-tested 2026-09-29 (eth_chainId, eth_call price(), eth_getLogs from the deploy block).
+// Removed: eth.llamarpc.com (dead), rpc.ankr.com/eth (API key), cloudflare-eth.com (-32603 on eth_call),
+// eth.api.onfinality.io/public (-32029 rate-limited without a key), eth-pokt.nodies.app (unreachable).
+// Only tenderly serves eth_getLogs over the full range; withContract() rotates to it for nonce_census.
+// Set ETH_RPC (comma-separated) in Vercel to put a keyed endpoint first.
 const RPCS = (process.env.ETH_RPC || [
   "https://ethereum-rpc.publicnode.com",
   "https://gateway.tenderly.co/public/mainnet",
   "https://eth-mainnet.public.blastapi.io",
-  "https://eth.api.onfinality.io/public",
-  "https://eth-pokt.nodies.app",
 ].join(",")).split(",").map((s) => s.trim()).filter(Boolean);
 
 const NONCE_ADDR = process.env.NONCE_ADDR || CONTRACT;
@@ -249,6 +249,15 @@ const handler = createMcpHandler(
           return txt({ error: `sold out: ${state.minted}/${MAX_SUPPLY} minted`, minted: state.minted });
         }
         const packet = mintPacket({ minter, nonce, priceWei: state.price, contract: NONCE_ADDR, slippageBps });
+        // A winning hash mints once, ever. Refuse to hand out a packet that can only revert with "seed used".
+        const used = await withContract((c) => c.usedSeed(packet.proof.workHash));
+        if (used) {
+          return txt({
+            error: "seed used: this nonce's winning hash has already minted a piece, so the transaction would revert. Mine a fresh nonce with nonce_mine.",
+            workHash: packet.proof.workHash,
+            usedSeed: true,
+          });
+        }
         return txt({
           ...packet,
           live_price_wei: state.price.toString(),
@@ -299,7 +308,7 @@ const handler = createMcpHandler(
                 !seedMatch && "The local recomputation does not reproduce the stored seed.",
                 bits < MIN_BITS && `The stored proof only reaches ${bits} leading-zero bits (floor is ${MIN_BITS}).`,
                 !powOk && "The contract itself reports pow_ok = false.",
-                !canonicalOk && "The contract reports canonical_ok = false: the on-chain render no longer matches what was committed at mint.",
+                !canonicalOk && "The contract reports canonical_ok = false: it has no valid stored proof for this id (canonical_ok = pow_ok && proofMinter(id) != 0).",
               ].filter(Boolean).join(" "),
         });
       }
