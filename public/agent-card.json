@@ -67,8 +67,7 @@
     }
   ],
   "supportedTrust": [
-    "reputation",
-    "crypto-economic"
+    "reputation"
   ],
   "x402Support": false,
   "active": true,
