@@ -39,7 +39,7 @@
     },
     {
       "name": "8004NONCE-site",
-      "endpoint": "https://8004-nonce-site.vercel.app/"
+      "endpoint": "https://daemon-8004nonce.ar.io"
     },
     {
       "name": "8004NONCE-contract",

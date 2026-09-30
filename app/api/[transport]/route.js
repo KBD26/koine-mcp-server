@@ -17,16 +17,20 @@ export const maxDuration = 60;          // nonce_mine needs headroom
 /* RPC — multiple endpoints, first one that answers wins               */
 /* ================================================================== */
 
-// Endpoints below were re-tested 2026-09-29 (eth_chainId, eth_call price(), eth_getLogs from the deploy block).
+// Endpoints below were re-tested 2026-09-30 (eth_chainId, eth_call price(), eth_getLogs from the deploy block).
 // Removed: eth.llamarpc.com (dead), rpc.ankr.com/eth (API key), cloudflare-eth.com (-32603 on eth_call),
 // eth.api.onfinality.io/public (-32029 rate-limited without a key), eth-pokt.nodies.app (unreachable).
-// Only tenderly serves eth_getLogs over the full range; withContract() rotates to it for nonce_census.
-// Set ETH_RPC (comma-separated) in Vercel to put a keyed endpoint first.
-const RPCS = (process.env.ETH_RPC || [
+// Only tenderly and mevblocker serve eth_getLogs over the full range; withContract() rotates to them for
+// nonce_census. drpc answers calls (its free plan caps logs at 10,000 blocks).
+// ETH_RPC (comma-separated, set in Vercel) is tried first, e.g. a keyed endpoint; the public list stays as fallback.
+const RPCS = [...new Set([
+  ...(process.env.ETH_RPC || "").split(","),
   "https://ethereum-rpc.publicnode.com",
   "https://gateway.tenderly.co/public/mainnet",
   "https://eth-mainnet.public.blastapi.io",
-].join(",")).split(",").map((s) => s.trim()).filter(Boolean);
+  "https://eth.drpc.org",
+  "https://rpc.mevblocker.io",
+].map((s) => s.trim()).filter(Boolean))];
 
 const NONCE_ADDR = process.env.NONCE_ADDR || CONTRACT;
 
