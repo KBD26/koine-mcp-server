@@ -53,4 +53,4 @@ The only thing that matters is keeping the folder structure intact — especiall
 **Notes**
 - Vercel free **Hobby** tier runs this fine to start. If Vercel ever flags commercial use, Pro is $20/mo (not needed now).
 - Change contract/RPC anytime via the `KOINE_ADDR` / `KOINE_RPC` env vars in Vercel.
-- Endpoints exposed: `/api/mcp` (Streamable HTTP) and `/api/sse` (legacy SSE).
+- Endpoint exposed: `/api/mcp` (Streamable HTTP). The legacy SSE transport is disabled (it needed Redis).

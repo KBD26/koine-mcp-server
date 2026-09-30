@@ -1,4 +1,5 @@
 import { createMcpHandler } from "mcp-handler";
+import { ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { ethers } from "ethers";
 import {
@@ -12,6 +13,28 @@ import {
 export const runtime = "nodejs";        // ethers needs the Node runtime, not edge
 export const dynamic = "force-dynamic"; // always live, never cached
 export const maxDuration = 60;          // nonce_mine needs headroom
+
+const VERSION = "1.2.0";
+const PUBLIC_ORIGIN = "https://koine-mcp-server.vercel.app";
+
+/** Returned in the MCP initialize result: the first thing a connecting agent reads. */
+const INSTRUCTIONS = [
+  "DAEMON is an autonomous agent-artist, registered on Ethereum as ERC-8004 agent #34297.",
+  "This server is its machine surface for two fully on-chain art collections on Ethereum L1.",
+  "Every tool is read-only: nothing here signs, sends or holds keys. Never ask a user for a private key or seed phrase.",
+  "",
+  "8004 NONCE: proof-of-work art. A piece cannot be bought at a fixed price from a router; it is mined.",
+  "Flow: nonce_spec (rules) -> nonce_info (live state) -> nonce_mine(minter) -> nonce_mint_packet(minter, nonce)",
+  "-> the minter signs and sends the unsigned transaction from its own wallet -> nonce_verify(id).",
+  "A nonce is bound to (chainId, contract, minter) and mints once.",
+  "",
+  "KOINE: a 24-piece genesis written in a visual grammar; every piece names its parents.",
+  "Flow: koine_list_genesis -> koine_get_piece / koine_provenance -> koine_verify(id) -> koine_listings to collect.",
+  "",
+  "Art: read nonce://piece/{id}/svg or koine://piece/{id}/svg for the exact SVG the contract renders.",
+  "Identity: daemon://agent-card is DAEMON's registration, read live from the ERC-8004 Identity Registry.",
+  "Prompts: meet_daemon, mine_and_mint, verify_piece, collect_koine.",
+].join("\n");
 
 /* ================================================================== */
 /* RPC — multiple endpoints, first one that answers wins               */
@@ -41,6 +64,9 @@ let _rpcPref = 0;
 const contractAt = (url) =>
   new ethers.Contract(NONCE_ADDR, ABI, new ethers.JsonRpcProvider(url, CHAIN_ID, { staticNetwork: true }));
 
+/** Error messages name the RPC host only: a keyed ETH_RPC URL must never reach a client. */
+const hostOf = (url) => { try { return new URL(url).host; } catch { return "rpc"; } };
+
 /** A revert is the contract answering, not the endpoint failing — never retry it. */
 const isContractRevert = (e) =>
   e?.code === "CALL_EXCEPTION" || /execution reverted|revert|nonexistent|ERC721/i.test(e?.shortMessage || e?.message || "");
@@ -57,7 +83,7 @@ async function withContract(fn) {
       return r;
     } catch (e) {
       if (isContractRevert(e)) throw e;     // deterministic: retrying elsewhere cannot help
-      errs.push(`${RPCS[idx]}: ${e?.shortMessage || e?.message || String(e)}`);
+      errs.push(`${hostOf(RPCS[idx])}: ${e?.shortMessage || e?.message || String(e)}`);
     }
   }
   _rpcPref = (start + 1) % RPCS.length;
@@ -75,6 +101,7 @@ async function cached(key, ttlMs, fn) {
   if (hit && now - hit.t < ttlMs) return { ...hit.v, cached: true, cache_age_seconds: Math.round((now - hit.t) / 1000) };
   const v = await fn();
   _cache.set(key, { t: now, v });
+  while (_cache.size > 300) _cache.delete(_cache.keys().next().value);   // bounded: art entries are large
   return { ...v, cached: false };
 }
 
@@ -98,6 +125,7 @@ const KOINE_ABI = [
   "function ownerOf(uint256 id) view returns (address)",
   "function verify(uint256 id) view returns (string)",
   "function pieces(uint256 id) view returns (uint32 seed, uint8 gen, uint8 morph, uint16 p0, uint16 p1, bool hasP)",
+  "function tokenURI(uint256 id) view returns (string)",
 ];
 
 const MASKS = [["R", 1], ["B", 2], ["T", 4], ["L", 8]];
@@ -112,12 +140,15 @@ async function withKoine(fn) {
     try { return await fn(koineAt(url)); }
     catch (e) {
       if (/execution reverted|revert|nonexistent/i.test(e?.shortMessage || e?.message || "")) throw e;
-      errs.push(`${url}: ${e?.shortMessage || e?.message || String(e)}`);
+      errs.push(`${hostOf(url)}: ${e?.shortMessage || e?.message || String(e)}`);
     }
   }
   throw new Error(`all RPC endpoints failed — ${errs.join(" | ")}`);
 }
 const txt = (o) => ({ content: [{ type: "text", text: typeof o === "string" ? o : JSON.stringify(o, null, 2) }] });
+
+/** The KOINE genesis lattice is fixed, so one read serves every lineage query for an hour. */
+const koineAll = async () => (await cached("koine-all", 3600_000, async () => ({ list: await withKoine(readAllKoine) }))).list;
 
 async function readAllKoine(c) {
   const total = Number(await c.total());
@@ -130,21 +161,130 @@ async function readAllKoine(c) {
 }
 
 /* ================================================================== */
+/* On-chain art + identity (resources)                                 */
+/* ================================================================== */
+
+/** Decodes a data: URI (base64 or percent-encoded) to text. */
+function decodeDataUri(uri, what) {
+  const m = /^data:([^,]*?),(.*)$/s.exec(String(uri || ""));
+  if (!m) throw new Error(`${what} is not a data: URI`);
+  if (/;base64$/i.test(m[1])) return Buffer.from(m[2], "base64").toString("utf8");
+  try { return decodeURIComponent(m[2]); } catch { return m[2]; }
+}
+
+/** tokenURI -> { meta (name, description, attributes), svg } */
+function artFromTokenURI(uri) {
+  const meta = JSON.parse(decodeDataUri(uri, "tokenURI"));
+  if (!meta.image) throw new Error("tokenURI has no image");
+  const svg = decodeDataUri(meta.image, "image");
+  delete meta.image;
+  return { meta, svg };
+}
+
+/** JSON-RPC error with an MCP code: -32602 invalid params, -32002 resource not found. */
+const rpcErr = (code, message) => Object.assign(new Error(message), { code });
+
+/** Template variables arrive as strings; accept a plain decimal id only. */
+function parseId(v, max, label) {
+  const s = Array.isArray(v) ? v[0] : v;
+  if (!/^\d{1,5}$/.test(String(s))) throw rpcErr(-32602, `${label}: id must be a whole number`);
+  const id = Number(s);
+  if (id > max) throw rpcErr(-32602, `${label}: id must be 0-${max}`);
+  return id;
+}
+
+/** Tries each endpoint in turn and moves on after ANY failure. For heavy reads (tokenURI renders
+ *  the SVG on-chain) a node's gas cap or timeout surfaces as CALL_EXCEPTION, which is not a real revert. */
+async function anyRpc(urls, fn) {
+  const errs = [];
+  for (const url of urls) {
+    try { return await fn(url); }
+    catch (e) { errs.push(`${hostOf(url)}: ${e?.shortMessage || e?.message || String(e)}`); }
+  }
+  throw new Error(`all RPC endpoints failed — ${errs.join(" | ")}`);
+}
+const KOINE_ALL_RPCS = () => [...KOINE_RPCS, ...RPCS.filter((r) => !KOINE_RPCS.includes(r))];
+
+const IDENTITY_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432";
+const AGENT_ID = 34297;
+const REGISTRY_ABI = ["function tokenURI(uint256 agentId) view returns (string)"];
+
+/** DAEMON's ERC-8004 registration, read live from the Identity Registry (the card is fully on-chain). */
+async function readAgentCard() {
+  return cached("agent-card", 10 * 60_000, async () => {
+    const errs = [];
+    for (const url of RPCS) {
+      try {
+        const reg = new ethers.Contract(IDENTITY_REGISTRY, REGISTRY_ABI, new ethers.JsonRpcProvider(url, CHAIN_ID, { staticNetwork: true }));
+        const uri = await reg.tokenURI(AGENT_ID);
+        const text = /^https?:\/\//i.test(uri)
+          ? await (await fetch(uri, { headers: { accept: "application/json" } })).text()
+          : decodeDataUri(uri, "agent URI");
+        return { text: JSON.stringify(JSON.parse(text), null, 2) };
+      } catch (e) {
+        errs.push(`${hostOf(url)}: ${e?.shortMessage || e?.message || String(e)}`);
+      }
+    }
+    throw new Error(`could not read agent ${AGENT_ID} from the ERC-8004 registry — ${errs.join(" | ")}`);
+  });
+}
+
+/** Token art is immutable, so it is cached for hours (bounded by the cache size). */
+const nonceArt = (id) => cached(`nonce-art:${id}`, 6 * 3600_000, async () => {
+  const minted = await anyRpc(RPCS, async (url) => Number(await contractAt(url).minted()));
+  if (id >= minted) throw rpcErr(-32002, `8004 NONCE #${id} has not been minted (${minted} minted so far)`);
+  const uri = await anyRpc(RPCS, (url) => contractAt(url).tokenURI(id));
+  const { meta, svg } = artFromTokenURI(uri);
+  return { svg, name: meta.name || `8004 NONCE #${id}` };
+});
+const koineArt = (id) => cached(`koine-art:${id}`, 6 * 3600_000, async () => {
+  const uri = await anyRpc(KOINE_ALL_RPCS(), (url) => koineAt(url).tokenURI(id));
+  const { meta, svg } = artFromTokenURI(uri);
+  return { svg, name: meta.name || `KOINE #${id}` };
+});
+
+/** Tool titles + MCP annotations. Every tool is read-only: none signs, sends or changes state. */
+const TOOL_META = {
+  nonce_spec:        ["8004 NONCE: rules and spec", { openWorldHint: false }],
+  nonce_info:        ["8004 NONCE: live collection state", {}],
+  nonce_mine:        ["8004 NONCE: mine a proof-of-work nonce", { idempotentHint: false, openWorldHint: false }],
+  nonce_mint_packet: ["8004 NONCE: build the mint transaction (unsigned)", {}],
+  nonce_verify:      ["8004 NONCE: verify a piece (chain + independent recompute)", {}],
+  nonce_get_piece:   ["8004 NONCE: one piece in detail", {}],
+  nonce_census:      ["8004 NONCE: band census", {}],
+  koine_info:        ["KOINE: collection overview", {}],
+  koine_get_piece:   ["KOINE: one piece in detail", {}],
+  koine_verify:      ["KOINE: verify a piece", {}],
+  koine_provenance:  ["KOINE: lineage and adoption", {}],
+  koine_list_genesis:["KOINE: the full genesis", {}],
+  koine_listings:    ["KOINE: pieces for sale", {}],
+};
 
 const handler = createMcpHandler(
   (server) => {
+    /** Registers a tool with its title and read-only annotations. */
+    const tool = (name, description, inputSchema, cb) => {
+      const [title, hints] = TOOL_META[name];
+      return server.registerTool(name, {
+        title,
+        description,
+        inputSchema,
+        annotations: { title, readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true, ...hints },
+      }, cb);
+    };
+
     /* -------------------------------------------------------------- */
     /* 8004 NONCE                                                     */
     /* -------------------------------------------------------------- */
 
-    server.tool(
+    tool(
       "nonce_spec",
       "The complete machine-readable specification for 8004 NONCE: the proof-of-work rule and its exact preimage layout, the mint calldata, the price curve, rarity derivation, every function selector, and the safety rules. Static — needs no network, so it always answers. Read this FIRST before mining or minting.",
       {},
       async () => txt(SPEC)
     );
 
-    server.tool(
+    tool(
       "nonce_info",
       "Live state of the 8004 NONCE collection on Ethereum mainnet: how many are minted, the current mint price, whether public minting is open, supply remaining, and canonical links. 8004 NONCE is fully on-chain proof-of-work generative art by the autonomous agent-artist DAEMON — each piece must be MINED before it can be minted.",
       {},
@@ -181,7 +321,7 @@ const handler = createMcpHandler(
       }
     );
 
-    server.tool(
+    tool(
       "nonce_mine",
       "DO THE WORK. Grinds keccak256 to find a proof-of-work nonce valid for a specific minter address, at or above a chosen difficulty. This is the only way to become eligible to mint an 8004 NONCE piece. The nonce is bound to (chainId, contract, minter) — it is worthless to any other address, so mine for the address that will actually send the transaction. Returns the nonce, its work hash, difficulty in leading-zero bits, and band. Deadline-bounded: for difficulty above ~20 bits, run the local miner script instead of waiting on a server.",
       {
@@ -231,7 +371,7 @@ const handler = createMcpHandler(
       }
     );
 
-    server.tool(
+    tool(
       "nonce_mint_packet",
       "Builds a ready-to-broadcast mint transaction from a mined nonce — {to, data, value} plus copy-paste commands for MetaMask Agent Wallet (mm wallet send-transaction) and the Bankr wallet API. NEVER holds, asks for, or touches a private key. Re-derives and re-checks the proof before emitting anything, and reads the live price(), so a bad nonce fails here instead of costing gas on a revert.",
       {
@@ -274,7 +414,7 @@ const handler = createMcpHandler(
       }
     );
 
-    server.tool(
+    tool(
       "nonce_verify",
       "THE KEYSTONE. Calls the contract's on-chain verify(id), then INDEPENDENTLY recomputes the proof-of-work from the stored (minter, nonce) using local keccak and compares. Two machines, one truth. Returns the chain's answer, the local recomputation, and whether they MATCH — machine-decidable trust with no trusted intermediary.",
       { id: z.number().int().min(0).describe("token id to verify") },
@@ -318,7 +458,7 @@ const handler = createMcpHandler(
       }
     );
 
-    server.tool(
+    tool(
       "nonce_get_piece",
       "Full detail on one 8004 NONCE token: its seed (which IS the winning work hash), difficulty in leading-zero bits, band, rarity score, current owner, and links. Every value is read live from the chain.",
       { id: z.number().int().min(0).describe("token id (0-based; 0-20 are DAEMON's mined genesis)") },
@@ -341,6 +481,7 @@ const handler = createMcpHandler(
           owner: d.owner,
           genesis: id < ARTIST_RESERVE,
           render: "fully on-chain — call tokenURI(id) for the base64 JSON with an embedded animated SVG",
+          art: `nonce://piece/${id}/svg`,
           links: {
             opensea: `https://opensea.io/assets/ethereum/${NONCE_ADDR}/${id}`,
             etherscan: `https://etherscan.io/token/${NONCE_ADDR}?a=${id}`,
@@ -350,7 +491,7 @@ const handler = createMcpHandler(
       }
     );
 
-    server.tool(
+    tool(
       "nonce_census",
       "Live distribution of minted 8004 NONCE pieces across difficulty bands, read from the chain. Bands are UNCAPPED: supply per band is not designed, it is the emergent result of how hard each minter chose to work. Returns raw counts only — no interpretation.",
       {
@@ -430,7 +571,7 @@ const handler = createMcpHandler(
     /* KOINE                                                          */
     /* -------------------------------------------------------------- */
 
-    server.tool(
+    tool(
       "koine_info",
       "KOINE collection overview: name, total supply, the artist agent DAEMON, contract address, chain, and links. KOINE is a fully on-chain generative-art collection on Ethereum L1 authored by the agent DAEMON.",
       {},
@@ -441,7 +582,7 @@ const handler = createMcpHandler(
       }
     );
 
-    server.tool(
+    tool(
       "koine_get_piece",
       "Traits + current owner of one KOINE token: generation, morphemes (R/B/T/L), parent token ids, seed, owner.",
       { id: z.number().int().min(0).describe("token id (0-23 for the genesis)") },
@@ -451,23 +592,23 @@ const handler = createMcpHandler(
           let owner = null; try { owner = await c.ownerOf(id); } catch {}
           return { p, owner };
         });
-        return txt({ id, generation: Number(p.gen), morphemes: morphStr(Number(p.morph)), parents: p.hasP ? [Number(p.p0), Number(p.p1)] : [], seed: seedHex(p.seed), owner });
+        return txt({ id, generation: Number(p.gen), morphemes: morphStr(Number(p.morph)), parents: p.hasP ? [Number(p.p0), Number(p.p1)] : [], seed: seedHex(p.seed), owner, art: `koine://piece/${id}/svg` });
       }
     );
 
-    server.tool(
+    tool(
       "koine_verify",
       "THE KEYSTONE. Calls the contract's on-chain verify(id) and returns machine-decidable trust: {canonical_ok (the on-chain render still hashes to the digest committed at mint), artist (DAEMON), digest, traits}. One call, a trustable answer.",
       { id: z.number().int().min(0).describe("token id to verify") },
       async ({ id }) => txt(JSON.parse(await withKoine((c) => c.verify(id))))
     );
 
-    server.tool(
+    tool(
       "koine_provenance",
       "Lineage of a KOINE piece from the on-chain derivation graph: parents, full ancestry, and downstream adoption (which pieces build on it).",
       { id: z.number().int().min(0).describe("token id") },
       async ({ id }) => {
-        const all = await withKoine(readAllKoine);
+        const all = await koineAll();
         const byId = Object.fromEntries(all.map((p) => [p.id, p]));
         if (!byId[id]) throw new Error(`unknown piece #${id}`);
         const anc = new Set(); const st = [...byId[id].parents];
@@ -477,14 +618,14 @@ const handler = createMcpHandler(
       }
     );
 
-    server.tool(
+    tool(
       "koine_list_genesis",
       "List every KOINE piece (id, generation, morphemes, parents) for discovery and composition.",
       {},
-      async () => txt((await withKoine(readAllKoine)).map((p) => ({ id: p.id, generation: p.gen, morphemes: morphStr(p.morph), parents: p.parents })))
+      async () => txt((await koineAll()).map((p) => ({ id: p.id, generation: p.gen, morphemes: morphStr(p.morph), parents: p.parents })))
     );
 
-    server.tool(
+    tool(
       "koine_listings",
       "KOINE pieces currently for sale, cheapest first, so an agent can COLLECT. Always returns the collection, contract, and OpenSea link; when an OpenSea API key is set on the server it also returns live listings (token id, price in ETH, item URL, order hash). Listings are Seaport orders — fulfill on-chain with any Seaport-capable wallet (e.g. the opensea-js SDK) from a funded address.",
       {},
@@ -522,9 +663,217 @@ const handler = createMcpHandler(
         }
       }
     );
+
+    /* -------------------------------------------------------------- */
+    /* Resources: identity, rules, lineage and the art itself          */
+    /* -------------------------------------------------------------- */
+
+    server.registerResource(
+      "daemon-agent-card",
+      "daemon://agent-card",
+      {
+        title: "DAEMON: ERC-8004 agent card (#34297)",
+        description: "DAEMON's registration, read live from tokenURI(34297) on the ERC-8004 Identity Registry. The card is stored fully on-chain: services, MCP tools, contracts and links.",
+        mimeType: "application/json",
+      },
+      async (uri) => ({ contents: [{ uri: uri.href, mimeType: "application/json", text: (await readAgentCard()).text }] })
+    );
+
+    server.registerResource(
+      "nonce-spec",
+      "nonce://spec",
+      {
+        title: "8004 NONCE: machine-readable spec",
+        description: "The proof-of-work rule, preimage layout, mint calldata, price curve, rarity bands, selectors and safety rules. Same content as the nonce_spec tool.",
+        mimeType: "application/json",
+      },
+      async (uri) => ({ contents: [{ uri: uri.href, mimeType: "application/json", text: JSON.stringify(SPEC, null, 2) }] })
+    );
+
+    server.registerResource(
+      "koine-genesis",
+      "koine://genesis",
+      {
+        title: "KOINE: the genesis lattice",
+        description: "All KOINE pieces with generation, morphemes and parents, read from the contract. Every piece names its parents.",
+        mimeType: "application/json",
+      },
+      async (uri) => {
+        const text = JSON.stringify((await koineAll()).map((p) => ({ id: p.id, generation: p.gen, morphemes: morphStr(p.morph), parents: p.parents, art: `koine://piece/${p.id}/svg` })), null, 2);
+        return { contents: [{ uri: uri.href, mimeType: "application/json", text }] };
+      }
+    );
+
+    server.registerResource(
+      "nonce-piece-svg",
+      new ResourceTemplate("nonce://piece/{id}/svg", {
+        list: async () => ({
+          resources: Array.from({ length: ARTIST_RESERVE }, (_, id) => ({
+            uri: `nonce://piece/${id}/svg`,
+            name: `8004 NONCE #${id}`,
+            title: `8004 NONCE #${id}`,
+            description: `Genesis piece #${id}, mined by DAEMON. The exact SVG the contract renders.`,
+            mimeType: "image/svg+xml",
+          })),
+        }),
+      }),
+      {
+        title: "8004 NONCE: the art of any piece (SVG)",
+        description: "The exact animated SVG the contract renders for token {id}, decoded from tokenURI. The seed is the winning hash, so the art is the proof of work made visible. Listed: DAEMON's 21 mined genesis pieces; any minted id can be read.",
+        mimeType: "image/svg+xml",
+      },
+      async (uri, vars) => {
+        const id = parseId(vars.id, MAX_SUPPLY - 1, "8004 NONCE");
+        const art = await nonceArt(id);
+        return { contents: [{ uri: uri.href, mimeType: "image/svg+xml", text: art.svg }] };
+      }
+    );
+
+    server.registerResource(
+      "koine-piece-svg",
+      new ResourceTemplate("koine://piece/{id}/svg", {
+        list: async () => ({
+          resources: Array.from({ length: 24 }, (_, id) => ({
+            uri: `koine://piece/${id}/svg`,
+            name: `KOINE #${id}`,
+            title: `KOINE #${id}`,
+            description: `KOINE genesis piece #${id}. The exact SVG the contract renders.`,
+            mimeType: "image/svg+xml",
+          })),
+        }),
+      }),
+      {
+        title: "KOINE: the art of any piece (SVG)",
+        description: "The exact SVG the KOINE contract renders for token {id}, decoded from tokenURI.",
+        mimeType: "image/svg+xml",
+      },
+      async (uri, vars) => {
+        const id = parseId(vars.id, 23, "KOINE");
+        const art = await koineArt(id);
+        return { contents: [{ uri: uri.href, mimeType: "image/svg+xml", text: art.svg }] };
+      }
+    );
+
+    /* -------------------------------------------------------------- */
+    /* Prompts: guided flows (show up as slash commands in clients)    */
+    /* -------------------------------------------------------------- */
+
+    const say = (text) => ({ messages: [{ role: "user", content: { type: "text", text } }] });
+
+    server.registerPrompt(
+      "meet_daemon",
+      {
+        title: "Meet DAEMON",
+        description: "A factual briefing on DAEMON (ERC-8004 agent #34297) and its two on-chain collections, built from live tool calls.",
+      },
+      () => say([
+        "Brief me on DAEMON, the autonomous agent-artist behind this server.",
+        "1. Read the resource daemon://agent-card (DAEMON's ERC-8004 registration, read live from the chain) and say what it declares.",
+        "2. Call nonce_info and koine_info.",
+        "3. Explain in plain words: what 8004 NONCE is and why each piece has to be mined; what KOINE is and how every piece names its parents; how an agent can mine, mint and verify with the tools here.",
+        "Only state numbers that come from the tool results. Keep it short.",
+      ].join("\n"))
+    );
+
+    server.registerPrompt(
+      "mine_and_mint",
+      {
+        title: "Mine and mint an 8004 NONCE",
+        description: "Walks through mining a proof-of-work nonce for your address and building the unsigned mint transaction. Nothing is signed or sent for you.",
+        argsSchema: {
+          minter: z.string().describe("The 0x address that will send the mint transaction (the proof is bound to it)."),
+          target_bits: z.string().optional().describe("Difficulty in leading-zero bits, 16-24. Default 16 (the floor)."),
+        },
+      },
+      ({ minter, target_bits }) => {
+        const bits = /^\d+$/.test(String(target_bits || "")) ? Math.min(24, Math.max(MIN_BITS, Number(target_bits))) : MIN_BITS;
+        return say([
+          `Mine and mint one 8004 NONCE piece for the address ${minter}.`,
+          "1. Call nonce_spec and summarize the rules: the proof-of-work floor, what the nonce is bound to, and the safety rule.",
+          "2. Call nonce_info: is public minting open, and what is the live price?",
+          `3. Call nonce_mine with minter=${minter} and targetBits=${bits}. Report the nonce, its workHash, its leading-zero bits and its band.` +
+            (bits > 20 ? " Above ~20 bits the server may run out of time; if so, use the local miner from the 8004-nonce skill." : ""),
+          "4. Call nonce_mint_packet with the same minter and nonce. Show the unsigned transaction exactly as returned (to, data, value) and restate the contract address.",
+          `Do not sign or send anything yourself and never ask for a private key or seed phrase: the transaction must be sent from ${minter}'s own wallet.`,
+          "After I confirm it was sent, call nonce_verify on the new token id and tell me whether the chain and the independent recomputation MATCH.",
+        ].join("\n"));
+      }
+    );
+
+    server.registerPrompt(
+      "verify_piece",
+      {
+        title: "Verify a piece",
+        description: "Checks an 8004 NONCE or KOINE piece against the chain and explains each check in plain words, then shows the art.",
+        argsSchema: {
+          collection: z.enum(["nonce", "koine"]).describe("nonce = 8004 NONCE, koine = KOINE"),
+          id: z.string().describe("Token id"),
+        },
+      },
+      ({ collection, id }) => say(collection === "koine"
+        ? [
+            `Verify KOINE #${id} without trusting anyone.`,
+            `1. Call koine_verify with id=${id}. Explain canonical_ok (the on-chain render still hashes to the digest committed at mint) and the artist address.`,
+            `2. Call koine_provenance with id=${id}: generation, morphemes, parents and full ancestry.`,
+            `3. Read the resource koine://piece/${id}/svg and describe the artwork.`,
+            "End with a one-line verdict.",
+          ].join("\n")
+        : [
+            `Verify 8004 NONCE #${id} without trusting anyone.`,
+            `1. Call nonce_verify with id=${id}. Explain in plain words: the stored proof (minter, nonce); whether keccak256(chainId, contract, minter, nonce), recomputed locally, equals the seed; its leading-zero bits and band, and whether it clears the 16-bit floor; and the contract's own verify() answer.`,
+            `2. Read the resource nonce://piece/${id}/svg and describe the artwork.`,
+            "End with a one-line verdict: MATCH or MISMATCH.",
+          ].join("\n"))
+    );
+
+    server.registerPrompt(
+      "collect_koine",
+      {
+        title: "Collect KOINE",
+        description: "Finds KOINE pieces for sale and verifies each candidate before recommending it. Nothing is bought for you.",
+      },
+      () => say([
+        "Help me collect a KOINE piece.",
+        "1. Call koine_listings, and read the resource koine://genesis for every piece's generation, morphemes and parents.",
+        "2. For each listed piece (or, if there are no live listings, a few genesis pieces), call koine_verify so every candidate is verified before it is recommended.",
+        "3. Present the options with price (when listed), generation, morphemes and parents.",
+        "Do not buy or sign anything. KOINE listings are Seaport orders that I fulfill from my own wallet.",
+      ].join("\n"))
+    );
   },
-  {},
-  { basePath: "/api" }
+  {
+    serverInfo: {
+      name: "DAEMON",
+      title: "DAEMON: 8004 NONCE + KOINE",
+      version: VERSION,
+      description: "Autonomous agent-artist DAEMON (ERC-8004 agent #34297). Mine, mint and verify 8004 NONCE proof-of-work art; verify KOINE and trace its lineage. Fully on-chain on Ethereum L1. Read-only: never holds keys.",
+      websiteUrl: "https://8004nonce.eth.limo",
+      icons: [{ src: `${PUBLIC_ORIGIN}/koine.png`, mimeType: "image/png" }],
+    },
+    instructions: INSTRUCTIONS,
+  },
+  { basePath: "/api", disableSse: true }
 );
 
-export { handler as GET, handler as POST };
+/** The transport's GET /api/mcp 405 is a JSON-RPC error body with no Content-Type; label it as the JSON it is. */
+async function GET(request) {
+  const res = await handler(request);
+  if (res.status === 405 && !res.headers.get("content-type") && new URL(request.url).pathname.endsWith("/mcp")) {
+    const headers = new Headers(res.headers);
+    headers.set("content-type", "application/json");
+    return new Response(await res.text(), { status: res.status, headers });
+  }
+  return res;
+}
+
+export { GET, handler as POST };
+
+/** HEAD mirrors GET's 405 at once (mcp-handler has no HEAD branch, so it used to hang until the timeout). */
+export function HEAD() {
+  return new Response(null, { status: 405, headers: { allow: "POST, OPTIONS", "content-type": "application/json" } });
+}
+
+/** CORS preflight for browser-based MCP clients (headers come from next.config.mjs). */
+export function OPTIONS() {
+  return new Response(null, { status: 204 });
+}
